@@ -523,6 +523,62 @@ const tools: PptxTool[] = [
     },
   },
 
+  // ─── Set Text Format ──────────────────────────────────────────────────────
+
+  {
+    schema: {
+      name: "set_text_format",
+      description:
+        "Apply font formatting (size, color, bold, italic) to the entire text of a shape. All format properties are optional — supply only the ones you want to change.",
+      parameters: {
+        type: "object",
+        properties: {
+          slideIndex: {
+            type: "number",
+            description: "0-based index of the slide.",
+          },
+          shapeIndex: {
+            type: "number",
+            description: "0-based index of the shape on the slide.",
+          },
+          fontSize: {
+            type: "number",
+            description: "Font size in points, e.g. 72 for a hero number.",
+          },
+          color: {
+            type: "string",
+            description: "Font color as a hex string, e.g. '#38BDF8' or '#FFFFFF'.",
+          },
+          bold: {
+            type: "boolean",
+            description: "Whether the text should be bold.",
+          },
+          italic: {
+            type: "boolean",
+            description: "Whether the text should be italic.",
+          },
+        },
+        required: ["slideIndex", "shapeIndex"],
+      },
+    },
+    handler: async (args) => {
+      return PowerPoint.run(async (context) => {
+        const slide = context.presentation.slides.getItemAt(args.slideIndex as number);
+        const shape = slide.shapes.getItemAt(args.shapeIndex as number);
+        const font = shape.textFrame.textRange.font;
+
+        if (args.fontSize !== undefined) font.size = args.fontSize as number;
+        if (args.color   !== undefined) font.color = args.color as string;
+        if (args.bold    !== undefined) font.bold = args.bold as boolean;
+        if (args.italic  !== undefined) font.italic = args.italic as boolean;
+
+        await context.sync();
+
+        return { success: true };
+      });
+    },
+  },
+
   // ─── Get Shapes ───────────────────────────────────────────────────────────
 
   {
@@ -558,6 +614,40 @@ const tools: PptxTool[] = [
             type: shape.type,
           })),
         };
+      });
+    },
+  },
+
+  // ─── Delete All Shapes ────────────────────────────────────────────────────
+
+  {
+    schema: {
+      name: "delete_all_shapes",
+      description:
+        "Delete ALL shapes on a slide in a single operation. Prefer this over calling delete_shape repeatedly — it is far more efficient and avoids index-shifting bugs.",
+      parameters: {
+        type: "object",
+        properties: {
+          index: {
+            type: "number",
+            description: "0-based index of the slide.",
+          },
+        },
+        required: ["index"],
+      },
+    },
+    handler: async (args) => {
+      return PowerPoint.run(async (context) => {
+        const slide = context.presentation.slides.getItemAt(args.index as number);
+        const shapes = slide.shapes;
+        shapes.load("items/id");
+        await context.sync();
+
+        const count = shapes.items.length;
+        shapes.items.forEach((shape) => shape.delete());
+        await context.sync();
+
+        return { success: true, deletedCount: count };
       });
     },
   },
@@ -930,14 +1020,20 @@ function serializeExecution<T>(fn: () => Promise<T>): Promise<T> {
 
 export async function handlePptxToolCall(
   toolName: string,
-  args: unknown
+  args: unknown,
+  requestId: string
 ): Promise<unknown> {
   const handler = handlerMap.get(toolName);
   if (!handler) {
     throw new Error(`Unknown PowerPoint tool: "${toolName}"`);
   }
 
-  const key = `${toolName}:${JSON.stringify(args)}`;
+  // WHY requestId and not (toolName + args):
+  // A React double-mount sends the exact same TOOL_CALL postMessage twice, so
+  // both listeners see the same requestId — dedup correctly returns one promise.
+  // The AI calling delete_shape({index:0}) ten times produces ten DIFFERENT
+  // requestIds, so each gets its own entry and all ten deletes actually run.
+  const key = requestId;
   const existing = inFlightCalls.get(key);
   if (existing) return existing;
 

@@ -59,8 +59,8 @@ export function useChatEmbed(
     const embed = new UsableChatEmbed(iframe, {
       iframeOrigin: IFRAME_ORIGIN,
 
-      onToolCall: async (tool, args, _requestId) => {
-        return handlePptxToolCall(tool, args);
+      onToolCall: async (tool, args, requestId) => {
+        return handlePptxToolCall(tool, args, requestId);
       },
 
       onTokenRefreshRequired: ensureValidToken,
