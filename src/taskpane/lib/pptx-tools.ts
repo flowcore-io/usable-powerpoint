@@ -91,7 +91,7 @@ const tools: PptxTool[] = [
     schema: {
       name: "get_slide",
       description:
-        "Get the contents of a specific slide by its 0-based index. Returns all shapes with their names, IDs, types, and text content.",
+        "Get the contents of a specific slide by its 0-based index. Returns all shapes with their names, IDs, types, position/size (left, top, width, height in points), and text content.",
       parameters: {
         type: "object",
         properties: {
@@ -107,7 +107,7 @@ const tools: PptxTool[] = [
       return PowerPoint.run(async (context) => {
         const slide = context.presentation.slides.getItemAt(args.index as number);
         const shapes = slide.shapes;
-        shapes.load("items/id,items/name,items/type");
+        shapes.load("items/id,items/name,items/type,items/left,items/top,items/width,items/height");
 
         await context.sync();
 
@@ -131,6 +131,10 @@ const tools: PptxTool[] = [
               id: shape.id,
               name: shape.name,
               type: shape.type,
+              left: shape.left,
+              top: shape.top,
+              width: shape.width,
+              height: shape.height,
               text,
             };
           }),
@@ -145,7 +149,7 @@ const tools: PptxTool[] = [
     schema: {
       name: "get_selected_slide",
       description:
-        "Get the currently selected slide(s) in the presentation. Returns shapes and text on the first selected slide.",
+        "Get the currently selected slide(s) in the presentation. Returns shapes with their names, IDs, types, position/size (left, top, width, height in points), and text on the first selected slide.",
       parameters: {
         type: "object",
         properties: {},
@@ -164,7 +168,7 @@ const tools: PptxTool[] = [
 
         const firstSlide = selectedSlides.items[0];
         const shapes = firstSlide.shapes;
-        shapes.load("items/id,items/name,items/type");
+        shapes.load("items/id,items/name,items/type,items/left,items/top,items/width,items/height");
 
         await context.sync();
 
@@ -187,6 +191,10 @@ const tools: PptxTool[] = [
                 id: shape.id,
                 name: shape.name,
                 type: shape.type,
+                left: shape.left,
+                top: shape.top,
+                width: shape.width,
+                height: shape.height,
                 text,
               };
             }),
@@ -585,7 +593,7 @@ const tools: PptxTool[] = [
     schema: {
       name: "get_shapes",
       description:
-        "Get all shapes on a slide with their names, IDs, and types.",
+        "Get all shapes on a slide with their names, IDs, types, and position/size (left, top, width, height in points).",
       parameters: {
         type: "object",
         properties: {
@@ -601,7 +609,7 @@ const tools: PptxTool[] = [
       return PowerPoint.run(async (context) => {
         const slide = context.presentation.slides.getItemAt(args.index as number);
         const shapes = slide.shapes;
-        shapes.load("items/id,items/name,items/type");
+        shapes.load("items/id,items/name,items/type,items/left,items/top,items/width,items/height");
 
         await context.sync();
 
@@ -612,6 +620,10 @@ const tools: PptxTool[] = [
             id: shape.id,
             name: shape.name,
             type: shape.type,
+            left: shape.left,
+            top: shape.top,
+            width: shape.width,
+            height: shape.height,
           })),
         };
       });
@@ -668,7 +680,7 @@ const tools: PptxTool[] = [
     schema: {
       name: "delete_shape",
       description:
-        "Delete a shape from a slide by its 0-based shape index.",
+        "Delete a shape from a slide. Identify it by shapeId (preferred — use the id returned by get_slide/get_shapes) OR by shapeIndex.",
       parameters: {
         type: "object",
         properties: {
@@ -676,19 +688,37 @@ const tools: PptxTool[] = [
             type: "number",
             description: "0-based index of the slide.",
           },
+          shapeId: {
+            type: "string",
+            description: "ID of the shape (from get_slide / get_shapes). Preferred over shapeIndex.",
+          },
           shapeIndex: {
             type: "number",
-            description: "0-based index of the shape to delete.",
+            description: "0-based index of the shape. Used only when shapeId is not available.",
           },
         },
-        required: ["slideIndex", "shapeIndex"],
+        required: ["slideIndex"],
       },
     },
     handler: async (args) => {
       return PowerPoint.run(async (context) => {
         const slide = context.presentation.slides.getItemAt(args.slideIndex as number);
-        const shape = slide.shapes.getItemAt(args.shapeIndex as number);
-        shape.delete();
+
+        if (args.shapeId !== undefined) {
+          const shapes = slide.shapes;
+          shapes.load("items/id");
+          await context.sync();
+
+          const found = shapes.items.find((s) => s.id === args.shapeId);
+          if (!found) {
+            throw new Error(`Shape with id "${args.shapeId}" not found on slide ${args.slideIndex}.`);
+          }
+          found.delete();
+        } else if (args.shapeIndex !== undefined) {
+          slide.shapes.getItemAt(args.shapeIndex as number).delete();
+        } else {
+          throw new Error("Provide either shapeId or shapeIndex.");
+        }
 
         await context.sync();
 
@@ -855,7 +885,7 @@ const tools: PptxTool[] = [
     schema: {
       name: "set_shape_position",
       description:
-        "Move and/or resize a shape on a slide by setting its left, top, width, and/or height (in points). All position/size properties are optional — supply only the ones you want to change.",
+        "Move and/or resize a shape on a slide by setting its left, top, width, and/or height (in points). Identify the shape by shapeId (preferred — use the id returned by get_slide/get_shapes) OR by shapeIndex. All position/size properties are optional — supply only the ones you want to change.",
       parameters: {
         type: "object",
         properties: {
@@ -863,9 +893,13 @@ const tools: PptxTool[] = [
             type: "number",
             description: "0-based index of the slide.",
           },
+          shapeId: {
+            type: "string",
+            description: "ID of the shape (from get_slide / get_shapes). Preferred over shapeIndex.",
+          },
           shapeIndex: {
             type: "number",
-            description: "0-based index of the shape on the slide.",
+            description: "0-based index of the shape. Used only when shapeId is not available.",
           },
           left: {
             type: "number",
@@ -884,13 +918,32 @@ const tools: PptxTool[] = [
             description: "Height of the shape in points.",
           },
         },
-        required: ["slideIndex", "shapeIndex"],
+        required: ["slideIndex"],
       },
     },
     handler: async (args) => {
       return PowerPoint.run(async (context) => {
         const slide = context.presentation.slides.getItemAt(args.slideIndex as number);
-        const shape = slide.shapes.getItemAt(args.shapeIndex as number);
+
+        let shape: PowerPoint.Shape;
+
+        if (args.shapeId !== undefined) {
+          // Locate shape by ID — load all shapes and find the match
+          const shapes = slide.shapes;
+          shapes.load("items/id");
+          await context.sync();
+
+          const found = shapes.items.find((s) => s.id === args.shapeId);
+          if (!found) {
+            throw new Error(`Shape with id "${args.shapeId}" not found on slide ${args.slideIndex}.`);
+          }
+          shape = found;
+        } else if (args.shapeIndex !== undefined) {
+          shape = slide.shapes.getItemAt(args.shapeIndex as number);
+        } else {
+          throw new Error("Provide either shapeId or shapeIndex.");
+        }
+
         shape.load("left,top,width,height");
         await context.sync();
 
