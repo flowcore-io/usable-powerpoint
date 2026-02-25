@@ -881,8 +881,11 @@ const handlerMap: Map<string, PptxToolHandler> = new Map(
   tools.map((t) => [t.schema.name, t.handler])
 );
 
-// WHY THIS EXISTS
+// WHY BOTH OF THESE EXIST
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Problem 1 — Double-mount deduplication (inFlightCalls)
+// ───────────────────────────────────────────────────────
 // In this environment (Office.js task pane on macOS / WKWebView + React legacy
 // mode), two `window.addEventListener("message", ...)` listeners can become
 // active simultaneously for a single UsableChatEmbed instance. This is caused
@@ -907,6 +910,28 @@ const handlerMap: Map<string, PptxToolHandler> = new Map(
 // PowerPoint.run() only executes once. The second TOOL_RESPONSE is harmless.
 const inFlightCalls = new Map<string, Promise<unknown>>();
 
+// Problem 2 — Concurrent PowerPoint.run() calls (executionChain)
+// ───────────────────────────────────────────────────────────────
+// When the AI sends many tool calls in rapid succession (e.g. 14 set_table_data
+// calls to populate a table), the embed SDK dispatches them all immediately.
+// Each dispatch triggers a separate PowerPoint.run() context. PowerPoint.js
+// cannot handle many concurrent contexts — some never resolve their promise,
+// producing a `pending_parent_response` on the AI side.
+//
+// FIX: serialize all PowerPoint.run() calls through a single promise chain.
+// Each call waits for the previous one to settle before starting. Errors on
+// one call are swallowed from the chain so they don't block subsequent calls.
+let executionChain: Promise<unknown> = Promise.resolve();
+
+function serializeExecution<T>(fn: () => Promise<T>): Promise<T> {
+  const result = executionChain.then(() => fn()) as Promise<T>;
+  executionChain = result.then(
+    () => undefined,
+    () => undefined, // don't let a failed call block the queue
+  );
+  return result;
+}
+
 export async function handlePptxToolCall(
   toolName: string,
   args: unknown
@@ -920,7 +945,7 @@ export async function handlePptxToolCall(
   const existing = inFlightCalls.get(key);
   if (existing) return existing;
 
-  const promise = handler(args as Record<string, unknown>).then(
+  const promise = serializeExecution(() => handler(args as Record<string, unknown>)).then(
     (result) => { inFlightCalls.delete(key); return result; },
     (err)    => { inFlightCalls.delete(key); throw err; }
   );
