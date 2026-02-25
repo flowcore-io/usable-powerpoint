@@ -111,22 +111,21 @@ const tools: PptxTool[] = [
 
         await context.sync();
 
-        // Load text for each shape that has a text frame
-        for (const shape of shapes.items) {
-          shape.textFrame.load("textRange/text");
-        }
+        // Use getTextFrameOrNullObject() so shapes without a text frame
+        // (images, charts, groups) return isNullObject=true instead of
+        // throwing InvalidArgument at context.sync() time.
+        const textFrames = shapes.items.map((shape) =>
+          shape.getTextFrameOrNullObject()
+        );
+        textFrames.forEach((tf) => tf.load("isNullObject,textRange/text"));
 
         await context.sync();
 
         return {
           index: args.index as number,
           shapes: shapes.items.map((shape, i) => {
-            let text: string | null = null;
-            try {
-              text = shape.textFrame.textRange.text;
-            } catch {
-              // no text frame
-            }
+            const tf = textFrames[i];
+            const text = tf.isNullObject ? null : tf.textRange.text;
             return {
               index: i,
               id: shape.id,
@@ -169,9 +168,10 @@ const tools: PptxTool[] = [
 
         await context.sync();
 
-        for (const shape of shapes.items) {
-          shape.textFrame.load("textRange/text");
-        }
+        const textFrames = shapes.items.map((shape) =>
+          shape.getTextFrameOrNullObject()
+        );
+        textFrames.forEach((tf) => tf.load("isNullObject,textRange/text"));
 
         await context.sync();
 
@@ -180,12 +180,8 @@ const tools: PptxTool[] = [
           firstSlide: {
             id: firstSlide.id,
             shapes: shapes.items.map((shape, i) => {
-              let text: string | null = null;
-              try {
-                text = shape.textFrame.textRange.text;
-              } catch {
-                // no text frame
-              }
+              const tf = textFrames[i];
+              const text = tf.isNullObject ? null : tf.textRange.text;
               return {
                 index: i,
                 id: shape.id,
@@ -753,65 +749,65 @@ const tools: PptxTool[] = [
     },
   },
 
-  // ─── Insert Notes ─────────────────────────────────────────────────────────
+  // ─── Set Shape Position ───────────────────────────────────────────────────
 
   {
     schema: {
-      name: "insert_notes",
+      name: "set_shape_position",
       description:
-        "Set the speaker notes text on a slide. Uses the notes text frame on the notes slide.",
+        "Move and/or resize a shape on a slide by setting its left, top, width, and/or height (in points). All position/size properties are optional — supply only the ones you want to change.",
       parameters: {
         type: "object",
         properties: {
-          index: {
+          slideIndex: {
             type: "number",
             description: "0-based index of the slide.",
           },
-          notes: {
-            type: "string",
-            description: "The notes text to set.",
+          shapeIndex: {
+            type: "number",
+            description: "0-based index of the shape on the slide.",
+          },
+          left: {
+            type: "number",
+            description: "Distance from the left edge of the slide in points.",
+          },
+          top: {
+            type: "number",
+            description: "Distance from the top edge of the slide in points.",
+          },
+          width: {
+            type: "number",
+            description: "Width of the shape in points.",
+          },
+          height: {
+            type: "number",
+            description: "Height of the shape in points.",
           },
         },
-        required: ["index", "notes"],
+        required: ["slideIndex", "shapeIndex"],
       },
     },
     handler: async (args) => {
       return PowerPoint.run(async (context) => {
-        const slide = context.presentation.slides.getItemAt(args.index as number);
-
-        // The notes slide is accessible via the slide's notesSlide property (requirement set 1.12+).
-        // Fall back to a type cast for environments where it may not be in the typings.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const notesSlide = (slide as any).getNotesSlide();
-        const shapes = notesSlide.shapes;
-        shapes.load("items/type,items/placeholderFormat");
+        const slide = context.presentation.slides.getItemAt(args.slideIndex as number);
+        const shape = slide.shapes.getItemAt(args.shapeIndex as number);
+        shape.load("left,top,width,height");
         await context.sync();
 
-        // Find the notes body placeholder
-        for (const shape of shapes.items) {
-          try {
-            shape.placeholderFormat.load("type");
-          } catch {
-            // no placeholder
-          }
-        }
-        await context.sync();
-
-        for (const shape of shapes.items) {
-          try {
-            const pType = shape.placeholderFormat.type;
-            if (pType === "Body" || pType === PowerPoint.PlaceholderType.body) {
-              shape.textFrame.textRange.text = args.notes as string;
-              break;
-            }
-          } catch {
-            // no placeholder
-          }
-        }
+        if (args.left !== undefined) shape.left = args.left as number;
+        if (args.top !== undefined) shape.top = args.top as number;
+        if (args.width !== undefined) shape.width = args.width as number;
+        if (args.height !== undefined) shape.height = args.height as number;
 
         await context.sync();
 
-        return { success: true };
+        return {
+          success: true,
+          left: shape.left,
+          top: shape.top,
+          width: shape.width,
+          height: shape.height,
+        };
       });
     },
   },
