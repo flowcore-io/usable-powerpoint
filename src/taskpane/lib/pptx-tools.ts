@@ -640,14 +640,24 @@ const tools: PptxTool[] = [
       return PowerPoint.run(async (context) => {
         const slide = context.presentation.slides.getItemAt(args.index as number);
         const shapes = slide.shapes;
-        shapes.load("items/id");
+        shapes.load("items/id,items/name");
         await context.sync();
 
-        const count = shapes.items.length;
+        const deletedNames = shapes.items.map((s) => s.name);
         shapes.items.forEach((shape) => shape.delete());
         await context.sync();
 
-        return { success: true, deletedCount: count };
+        // Reload to confirm 0 shapes remain
+        shapes.load("items");
+        await context.sync();
+
+        return {
+          success: true,
+          deletedCount: deletedNames.length,
+          deletedShapes: deletedNames,
+          remainingShapes: shapes.items.length,
+          slideIsEmpty: shapes.items.length === 0,
+        };
       });
     },
   },
