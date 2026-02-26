@@ -417,7 +417,7 @@ const tools: PptxTool[] = [
         if (titleShapeIndex === -1) {
           // Fallback: use the first shape
           if (shapes.items.length === 0) {
-            throw new Error(`Slide ${args.index} has no shapes to set as title.`);
+            throw new Error(`Slide ${args.index} has no shapes — it is a blank slide with no placeholders. Use add_text_box to add a title text box instead.`);
           }
           titleShapeIndex = 0;
         }
@@ -1096,7 +1096,7 @@ const handlerMap: Map<string, PptxToolHandler> = new Map(
 // the duplicate arrives slightly after the first call completes.
 const inFlightCalls = new Map<string, Promise<unknown>>();
 const completedResults = new Map<string, { result: unknown; ts: number }>();
-const COMPLETED_TTL_MS = 3_000;
+const COMPLETED_TTL_MS = 100;
 
 // Problem 2 — Concurrent PowerPoint.run() calls (executionChain)
 // ───────────────────────────────────────────────────────────────
@@ -1135,7 +1135,7 @@ export async function handlePptxToolCall(
   // same message with DIFFERENT requestIds (observed in testing). Using
   // content means intentional re-calls with identical args within the TTL
   // window are also deduplicated — acceptable since those are rare and the
-  // TTL is short (3 s). The AI calling the same tool with different args (e.g.
+  // TTL is very short (100 ms). The AI calling the same tool with different args (e.g.
   // set_table_data on different cells) produces different keys and all run.
   const key = `${toolName}:${JSON.stringify(args)}`;
   const existing = inFlightCalls.get(key);
