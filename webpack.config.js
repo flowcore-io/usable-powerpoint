@@ -4,7 +4,7 @@ const CopyWebpackPlugin = require("copy-webpack-plugin");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const path = require("path");
 
-const urlDev = "https://localhost:3000/";
+const urlDev = "https://localhost:3333/";
 const urlProd = "https://flowcore-io.github.io/usable-powerpoint/";
 
 async function getHttpsOptions() {
@@ -101,7 +101,7 @@ module.exports = async (env, options) => {
         type: "https",
         options: env.WEBPACK_BUILD || options.https !== undefined ? options.https : await getHttpsOptions(),
       },
-      port: 3000,
+      port: 3333,
       // Proxy /auth/token → Keycloak token endpoint (avoids CORS from the dialog page)
       proxy: [
         {

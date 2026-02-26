@@ -478,16 +478,27 @@ const tools: PptxTool[] = [
         const width  = (args.width  as number | undefined) ?? 400;
         const height = (args.height as number | undefined) ?? 100;
 
-        slide.shapes.addTextBox(args.text as string, {
+        const newShape = slide.shapes.addTextBox(args.text as string, {
           left,
           top,
           width,
           height,
         });
+        newShape.load("id");
 
         await context.sync();
 
-        return { success: true };
+        // Count shapes to return the index
+        const shapes = slide.shapes;
+        shapes.load("items/id");
+        await context.sync();
+        const shapeIndex = shapes.items.findIndex((s) => s.id === newShape.id);
+
+        return {
+          success: true,
+          shapeId: newShape.id,
+          shapeIndex,
+        };
       });
     },
   },
@@ -537,7 +548,7 @@ const tools: PptxTool[] = [
     schema: {
       name: "set_text_format",
       description:
-        "Apply font formatting (size, color, bold, italic) to the entire text of a shape. All format properties are optional — supply only the ones you want to change.",
+        "Apply font formatting (size, color, bold, italic) to the entire text of a shape. Identify the shape by shapeId (preferred — use the id returned by get_slide / add_text_box) OR by shapeIndex. All format properties are optional — supply only the ones you want to change.",
       parameters: {
         type: "object",
         properties: {
@@ -545,9 +556,13 @@ const tools: PptxTool[] = [
             type: "number",
             description: "0-based index of the slide.",
           },
+          shapeId: {
+            type: "string",
+            description: "ID of the shape (from get_slide / add_text_box). Preferred over shapeIndex.",
+          },
           shapeIndex: {
             type: "number",
-            description: "0-based index of the shape on the slide.",
+            description: "0-based index of the shape on the slide. Used only when shapeId is not available.",
           },
           fontSize: {
             type: "number",
@@ -566,13 +581,29 @@ const tools: PptxTool[] = [
             description: "Whether the text should be italic.",
           },
         },
-        required: ["slideIndex", "shapeIndex"],
+        required: ["slideIndex"],
       },
     },
     handler: async (args) => {
       return PowerPoint.run(async (context) => {
         const slide = context.presentation.slides.getItemAt(args.slideIndex as number);
-        const shape = slide.shapes.getItemAt(args.shapeIndex as number);
+
+        let shape: PowerPoint.Shape;
+        if (args.shapeId !== undefined) {
+          const shapes = slide.shapes;
+          shapes.load("items/id");
+          await context.sync();
+          const found = shapes.items.find((s) => s.id === args.shapeId);
+          if (!found) {
+            throw new Error(`Shape with id "${args.shapeId}" not found on slide ${args.slideIndex}.`);
+          }
+          shape = found;
+        } else if (args.shapeIndex !== undefined) {
+          shape = slide.shapes.getItemAt(args.shapeIndex as number);
+        } else {
+          throw new Error("Provide either shapeId or shapeIndex.");
+        }
+
         const font = shape.textFrame.textRange.font;
 
         if (args.fontSize !== undefined) font.size = args.fontSize as number;
@@ -1057,7 +1088,15 @@ const handlerMap: Map<string, PptxToolHandler> = new Map(
 // FIX: track in-flight calls by (toolName + serialised args). If an identical
 // call arrives while one is already running, return the same promise so
 // PowerPoint.run() only executes once. The second TOOL_RESPONSE is harmless.
+//
+// NOTE: We key by content (toolName + JSON args), NOT by requestId. Testing
+// showed that the two duplicate listeners receive messages with DIFFERENT
+// requestIds, so requestId-based dedup was silently bypassed. Content-based
+// dedup with a short TTL catches both the in-flight case and the race where
+// the duplicate arrives slightly after the first call completes.
 const inFlightCalls = new Map<string, Promise<unknown>>();
+const completedResults = new Map<string, { result: unknown; ts: number }>();
+const COMPLETED_TTL_MS = 3_000;
 
 // Problem 2 — Concurrent PowerPoint.run() calls (executionChain)
 // ───────────────────────────────────────────────────────────────
@@ -1091,18 +1130,29 @@ export async function handlePptxToolCall(
     throw new Error(`Unknown PowerPoint tool: "${toolName}"`);
   }
 
-  // WHY requestId and not (toolName + args):
-  // A React double-mount sends the exact same TOOL_CALL postMessage twice, so
-  // both listeners see the same requestId — dedup correctly returns one promise.
-  // The AI calling delete_shape({index:0}) ten times produces ten DIFFERENT
-  // requestIds, so each gets its own entry and all ten deletes actually run.
-  const key = requestId;
+  // Content-based dedup key: toolName + serialised args.
+  // requestId cannot be used because the two duplicate listeners receive the
+  // same message with DIFFERENT requestIds (observed in testing). Using
+  // content means intentional re-calls with identical args within the TTL
+  // window are also deduplicated — acceptable since those are rare and the
+  // TTL is short (3 s). The AI calling the same tool with different args (e.g.
+  // set_table_data on different cells) produces different keys and all run.
+  const key = `${toolName}:${JSON.stringify(args)}`;
   const existing = inFlightCalls.get(key);
   if (existing) return existing;
 
+  const cached = completedResults.get(key);
+  if (cached && Date.now() - cached.ts < COMPLETED_TTL_MS) {
+    return Promise.resolve(cached.result);
+  }
+
   const promise = serializeExecution(() => handler(args as Record<string, unknown>)).then(
-    (result) => { inFlightCalls.delete(key); return result; },
-    (err)    => { inFlightCalls.delete(key); throw err; }
+    (result) => {
+      inFlightCalls.delete(key);
+      completedResults.set(key, { result, ts: Date.now() });
+      return result;
+    },
+    (err) => { inFlightCalls.delete(key); throw err; }
   );
   inFlightCalls.set(key, promise);
   return promise;
